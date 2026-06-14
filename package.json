@@ -1,0 +1,23 @@
+{
+  "name": "smart-access-gate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "小区智能门禁系统 - Django + React",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "setup:force": "node scripts/setup.js --force",
+    "start": "node scripts/start.js",
+    "dev": "node scripts/start.js",
+    "start:backend": "node scripts/start.js --backend-only",
+    "start:frontend": "node scripts/start.js --frontend-only",
+    "health": "node scripts/healthcheck.js",
+    "health:data": "node scripts/healthcheck.js --data",
+    "health:full": "node scripts/healthcheck.js --full",
+    "reset": "node scripts/reset.js",
+    "reset:hard": "node scripts/reset.js --hard",
+    "migrate": "cd backend && python manage.py migrate --noinput",
+    "seed": "cd backend && python manage.py seed_demo",
+    "backend:server": "cd backend && python manage.py runserver 127.0.0.1:8000",
+    "frontend:server": "cd frontend && npm run dev -- --host 127.0.0.1 --port 5173"
+  }
+}

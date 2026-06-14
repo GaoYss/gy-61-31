@@ -1,11 +1,49 @@
+from django.db import connection
 from django.db.models import Count, Q
 from django.utils import timezone
-from rest_framework import filters, viewsets
+from rest_framework import filters, status, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import AccessDevice, AlarmEvent, DoorOpenLog, VisitorPass
 from .serializers import AccessDeviceSerializer, AlarmEventSerializer, DoorOpenLogSerializer, VisitorPassSerializer
+
+
+class HealthCheckView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        checks = {}
+        overall = "healthy"
+
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+            checks["database"] = {"status": "healthy"}
+        except Exception as exc:
+            checks["database"] = {"status": "unhealthy", "error": str(exc)}
+            overall = "unhealthy"
+
+        try:
+            AccessDevice.objects.count()
+            AlarmEvent.objects.count()
+            VisitorPass.objects.count()
+            DoorOpenLog.objects.count()
+            checks["models"] = {"status": "healthy"}
+        except Exception as exc:
+            checks["models"] = {"status": "unhealthy", "error": str(exc)}
+            overall = "unhealthy"
+
+        data = {
+            "status": overall,
+            "timestamp": timezone.now().isoformat(),
+            "version": "1.0.0",
+            "checks": checks,
+        }
+        code = status.HTTP_200_OK if overall == "healthy" else status.HTTP_503_SERVICE_UNAVAILABLE
+        return Response(data, status=code)
 
 
 class DeviceViewSet(viewsets.ModelViewSet):

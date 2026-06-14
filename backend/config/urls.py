@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from access.views import AlarmViewSet, DeviceViewSet, DoorLogViewSet, StatsView, VisitorPassViewSet
+from access.views import AlarmViewSet, DeviceViewSet, DoorLogViewSet, HealthCheckView, StatsView, VisitorPassViewSet
 
 
 router = DefaultRouter()
@@ -13,6 +13,7 @@ router.register("door-logs", DoorLogViewSet, basename="door-log")
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    path("api/health/", HealthCheckView.as_view(), name="health-check"),
     path("api/stats/", StatsView.as_view(), name="stats"),
     path("api/", include(router.urls)),
 ]

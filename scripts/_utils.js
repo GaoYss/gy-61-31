@@ -58,6 +58,16 @@ function runSync(cmd, args, cwd = ROOT, env = process.env) {
   });
 }
 
+function runCapture(cmd, args, cwd = ROOT, env = process.env) {
+  return spawnSync(cmd, args, {
+    cwd,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: process.platform === "win32",
+    encoding: "utf-8",
+  });
+}
+
 function runAsync(cmd, args, cwd = ROOT, env = process.env) {
   return spawn(cmd, args, {
     cwd,
@@ -145,6 +155,7 @@ module.exports = {
   info,
   banner,
   runSync,
+  runCapture,
   runAsync,
   isWin,
   venvBin,

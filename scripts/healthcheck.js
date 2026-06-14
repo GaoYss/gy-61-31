@@ -14,7 +14,7 @@ const {
   COLORS,
   pythonBin,
   BACKEND_DIR,
-  runSync,
+  runCapture,
 } = require("./_utils");
 
 const BACKEND_HEALTH = "http://127.0.0.1:8000/api/health/";
@@ -129,50 +129,104 @@ async function main() {
 
   // ── 5. 数据完整性 ──
   if (demo || full) {
-    step("5/6  演示数据完整性（通过 Django ORM 验证）");
-    const tmpPy = path.join(os.tmpdir(), `_hc_counts_${Date.now()}.py`);
-    fs.writeFileSync(
-      tmpPy,
-      [
-        "import django, os, sys",
-        `sys.path.insert(0, ${JSON.stringify(BACKEND_DIR)})`,
-        "os.chdir(sys.path[0])",
-        "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')",
-        "django.setup()",
-        "from access.models import AccessDevice, AlarmEvent, DoorOpenLog, VisitorPass",
-        "print('DEVICES', AccessDevice.objects.count())",
-        "print('VISITORS', VisitorPass.objects.count())",
-        "print('ALARMS', AlarmEvent.objects.count())",
-        "print('LOGS', DoorOpenLog.objects.count())",
-      ].join("\n"),
-      "utf-8"
-    );
-    let text = "";
+    step("5/6  演示数据完整性");
+
+    const EXPECTED = {
+      devices:  { label: "门禁设备 (AccessDevice)",  min: 3 },
+      visitors: { label: "访客记录 (VisitorPass)",   min: 2 },
+      alarms:   { label: "异常报警 (AlarmEvent)",    min: 2 },
+      "door-logs": { label: "开门日志 (DoorOpenLog)", min: 4 },
+    };
+
+    let counts = {};
+    let source = "";
+
+    // 优先走 API（DRF 分页响应带 count 字段）
     try {
-      const r = runSync(pythonBin(), [tmpPy], BACKEND_DIR);
-      const parts = [];
-      if (r.stdout) parts.push(r.stdout.toString());
-      if (r.stderr) parts.push(r.stderr.toString());
-      for (const buf of r.output || []) { if (buf) parts.push(buf.toString()); }
-      text = parts.join("\n");
-    } finally {
-      try { fs.unlinkSync(tmpPy); } catch {}
+      for (const ep of Object.keys(EXPECTED)) {
+        const r = await request(`http://127.0.0.1:8000/api/${ep}/?page_size=1`);
+        const j = JSON.parse(r.body);
+        counts[ep] = typeof j.count === "number" ? j.count : null;
+      }
+      source = "API";
+    } catch {
+      counts = {};
+      source = "";
     }
-    text = text.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "");
-    const counts = {};
-    const re = /(DEVICES|VISITORS|ALARMS|LOGS)\s+(\d+)/g;
-    let m;
-    while ((m = re.exec(text)) !== null) {
-      counts[m[1]] = parseInt(m[2], 10);
+
+    // API 取不到则回退到 Django ORM 脚本
+    if (!source || Object.values(counts).some((v) => v === null)) {
+      const tmpPy = path.join(os.tmpdir(), `_hc_counts_${Date.now()}.py`);
+      fs.writeFileSync(
+        tmpPy,
+        [
+          "import django, os, sys",
+          `sys.path.insert(0, ${JSON.stringify(BACKEND_DIR)})`,
+          "os.chdir(sys.path[0])",
+          "os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')",
+          "django.setup()",
+          "from access.models import AccessDevice, AlarmEvent, DoorOpenLog, VisitorPass",
+          "print('DEVICES', AccessDevice.objects.count())",
+          "print('VISITORS', VisitorPass.objects.count())",
+          "print('ALARMS', AlarmEvent.objects.count())",
+          "print('LOGS', DoorOpenLog.objects.count())",
+        ].join("\n"),
+        "utf-8"
+      );
+      try {
+        const r = runCapture(pythonBin(), [tmpPy], BACKEND_DIR);
+        const text = (r.stdout || "")
+          .replace(/\x1B\[[0-9;]*[A-Za-z]/g, "")
+          .replace(/\r/g, "");
+        const map = { DEVICES: "devices", VISITORS: "visitors", ALARMS: "alarms", LOGS: "door-logs" };
+        for (const m of text.matchAll(/(DEVICES|VISITORS|ALARMS|LOGS)\s+(\d+)/g)) {
+          counts[map[m[1]]] = parseInt(m[2], 10);
+        }
+        source = "Django ORM";
+      } catch (e) {
+        warn(`ORM 回退失败: ${e.message}`);
+        source = "失败";
+      } finally {
+        try { fs.unlinkSync(tmpPy); } catch {}
+      }
     }
-    row("门禁设备 (AccessDevice)", `${counts.DEVICES ?? "?"} ${counts.DEVICES >= 3 ? "✅" : "⚠ (期望 ≥3)"}`);
-    row("访客记录 (VisitorPass)", `${counts.VISITORS ?? "?"} ${counts.VISITORS >= 2 ? "✅" : "⚠ (期望 ≥2)"}`);
-    row("异常报警 (AlarmEvent)", `${counts.ALARMS ?? "?"} ${counts.ALARMS >= 2 ? "✅" : "⚠ (期望 ≥2)"}`);
-    row("开门日志 (DoorOpenLog)", `${counts.LOGS ?? "?"} ${counts.LOGS >= 4 ? "✅" : "⚠ (期望 ≥4)"}`);
-    const demoOk = counts.DEVICES >= 3 && counts.VISITORS >= 2 && counts.ALARMS >= 2 && counts.LOGS >= 4;
-    if (demoOk) success("演示数据完整");
-    else error("演示数据缺失，请运行 npm run setup 重新 seed");
-    results.push({ name: "演示数据完整性", ok: demoOk });
+
+    info(`数据来源: ${source}`);
+
+    let allOk = true;
+    const shortfall = [];
+
+    for (const [ep, cfg] of Object.entries(EXPECTED)) {
+      const actual = counts[ep];
+      const min = cfg.min;
+      const ok = typeof actual === "number" && actual >= min;
+      if (!ok) allOk = false;
+
+      let tag;
+      if (typeof actual !== "number") {
+        tag = `${COLORS.red}无法获取${COLORS.reset}`;
+        shortfall.push(`${cfg.label}: 无法获取数量`);
+      } else if (actual >= min) {
+        tag = `${COLORS.green}${actual}${COLORS.reset} (≥${min} ✔)`;
+      } else {
+        const diff = min - actual;
+        tag = `${COLORS.red}${actual}${COLORS.reset} (期望 ≥${min}, ${COLORS.red}差 ${diff} 条${COLORS.reset})`;
+        shortfall.push(`${cfg.label}: 实际 ${actual}, 期望 ≥${min}, 差 ${diff} 条`);
+      }
+      row(cfg.label, tag);
+    }
+
+    log("");
+    if (allOk) {
+      success("演示数据完整，所有模型均满足最低要求");
+    } else {
+      error("演示数据不完整，以下模型未达最低要求：");
+      for (const s of shortfall) {
+        error(`  → ${s}`);
+      }
+      info("请运行 npm run setup 或 npm run seed 重新导入演示数据");
+    }
+    results.push({ name: "演示数据完整性", ok: allOk });
   } else {
     step("5/6  演示数据完整性（跳过，使用 -d/--data 启用）");
     warn("跳过数据完整性检查");
